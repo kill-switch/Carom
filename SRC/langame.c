@@ -1,0 +1,258 @@
+#include"langame.h"
+
+
+int sockfd;
+int newsockfd[10];
+int clients;
+char inputbuffer[256];// general input buffer
+char outputbuffer[256];// general outputbuffer
+int noofoutputbytes;
+int noofinputbytes;
+char newinput;
+char newoutput;
+char transclient;
+char recvingdata;
+pthread_t clithread;
+pthread_t inputthread;
+pthread_t outputthread;
+pthread_mutex_t mutexinput = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutexoutput= PTHREAD_MUTEX_INITIALIZER;
+
+
+// this is a ok even the recieve data is made delayed to accomplish delay 
+void broadcastData()
+{	
+	int i=0;
+	int pid;
+	int n;
+	while(i< clients)
+	{	
+		pid = fork();
+		if( pid == 0)
+		{
+			n = write(newsockfd[i] , outputbuffer , noofoutputbytes);
+			if(n< 0)
+			{
+				printf("unable write");
+			}
+			exit(0);
+		}
+		if(pid < 0)
+		{
+			printf("couldnot fork");
+		}
+		else
+		{
+			i++;
+		}
+	}
+}
+
+void *acceptData(void *ptr)
+{
+	int sock = *(int *)ptr;
+	int  n;
+	int i;
+	char tempbuff[256];	
+	while(1)
+	{
+		
+		bzero(tempbuff , 255);
+		n = read(sock,tempbuff,255);
+		if ( n< 0)
+		{
+			continue;
+		}
+		while(newinput !=0)
+		{
+		}
+		//printf("here");
+		pthread_mutex_lock(&mutexinput);
+		newinput = 1;
+		bcopy(tempbuff ,inputbuffer , 255);
+		noofinputbytes = n;
+		pthread_mutex_unlock(&mutexinput);
+		
+	}
+}
+
+void *acceptClient(void *ptr)
+{
+	int clilen;
+	int tempsock;
+	int iret;
+	int n;
+	int tosend = 0;
+	pthread_t threads[10];
+	struct sockaddr_in cli_addr;
+	clilen = sizeof(cli_addr);
+	while(1)
+	{
+		listen(sockfd, 5);
+		newsockfd[clients] = accept( sockfd, (struct sockaddr *) &cli_addr, &clilen);
+		
+
+		if(newsockfd < 0)
+		{
+			printf("unable to accept socket");
+			exit(1);
+		}
+		else
+		{
+			tosend = clients +1;
+			n = write(newsockfd[clients],&tosend,sizeof(int));
+			if(n<0)
+			{
+				printf("connection error : could to tell client his ticket\n");
+			}
+			iret = pthread_create(&threads[clients], NULL, &acceptData, &newsockfd[clients]);
+			clients++;
+		}
+	}
+}
+
+void *transmitData(void *value)
+{
+	int i = transclient;
+	int n;
+	while(1)
+	{
+		if(newoutput == 1)
+		{
+			pthread_mutex_lock(&mutexoutput);
+			newoutput = 0;
+			if(transclient < 0)
+			{			// broadcastmode
+				broadcastData();
+			}
+			else
+			{
+				n = write(newsockfd[i] , outputbuffer ,noofoutputbytes);
+				if( n <0)
+				{
+				
+					printf("unable to write");			
+				}
+			}
+			pthread_mutex_unlock(&mutexoutput);
+		}
+
+	}
+}
+
+
+	
+
+
+
+	
+void createServer(int portno)
+{
+	clients =0;
+	int iret,iret2;
+	struct sockaddr_in serv_addr;
+	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	if(sockfd <0)
+	{
+		printf("socket did not create");
+	}
+	bzero((char *) &serv_addr , sizeof(serv_addr));
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = INADDR_ANY;
+	serv_addr.sin_port = htons(portno);
+	if( bind(sockfd , (struct sockaddr *) &serv_addr , sizeof(serv_addr)) < 0)
+	{
+		printf(" unable to bind");
+		exit(1);
+	}
+	// the thread handling input of more clients
+	iret = pthread_create(&clithread, NULL, acceptClient , "");
+	if(iret <0)
+	{
+		printf("client thread did not create");
+	}
+	iret2 = pthread_create(&outputthread, NULL, transmitData, "");
+	if(iret2 <0)
+	{
+		printf("output thread did not create");
+	}
+	iret2 = pthread_create(&inputthread, NULL, acceptData, "");
+	if(iret2 <0)
+	{
+		printf("input thread did not create");
+	}
+
+}
+
+
+
+void createClient(int portno , char *hostname)
+{
+	clients = 1;
+	int iret;
+	struct sockaddr_in serv_addr;
+	struct hostent *server;
+	newsockfd[0] = socket(AF_INET, SOCK_STREAM, 0);
+	if(sockfd<0)
+	{
+		printf("socket didnot create");
+	}
+	server =gethostbyname(hostname);
+	if( server == NULL)
+	{
+		printf(" no such host");
+	}
+	bzero((char *) &serv_addr, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,server->h_length);
+    serv_addr.sin_port = htons(portno);
+    while(connect(newsockfd[0],(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0)
+    {
+    	printf(" jumping\n");
+    }
+    iret = pthread_create(&inputthread, NULL, acceptData, &newsockfd[0]);
+    iret = pthread_create(&outputthread, NULL, transmitData, &newsockfd[0]);
+	if(iret <0)
+	{
+		printf("output thread did not create");
+	}
+
+}
+
+	
+	
+int recieveData(void *in,int sizein)
+{
+	int n;
+	char *buffer;
+	buffer = (char *)in;
+	bzero(buffer,sizein);
+	while(newinput == 0)
+	{
+	}
+	if(newinput == 1)
+	{
+		//printf("data to recieve");
+		pthread_mutex_lock(&mutexinput);
+		newinput = 0;
+		bcopy(inputbuffer , buffer , sizein);
+		bzero(inputbuffer,0);
+		pthread_mutex_unlock(&mutexinput);
+		return noofinputbytes;
+	}
+	return 0;
+}
+
+
+void sendData(void *data , int noofbytes, char client)
+{
+	
+	int n;
+	pthread_mutex_lock(&mutexoutput);
+	bzero(outputbuffer, 256);
+	bcopy(data , outputbuffer, noofbytes);
+	transclient = client;
+	noofoutputbytes=noofbytes;
+	newoutput = 1;
+	pthread_mutex_unlock(&mutexoutput);
+}
